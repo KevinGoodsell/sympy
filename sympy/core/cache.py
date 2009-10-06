@@ -1,5 +1,281 @@
 """ Caching facility for SymPy """
 
+class Cache(object):
+    '''Base class for cache classes.'''
+
+    def fetch(self, key):
+        raise NotImplementedError()
+
+    def add(self, item, key):
+        raise NotImplementedError()
+
+    def fetch_args(self, *args, **kwargs):
+        raise NotImplementedError()
+
+    def add_args(self, item, *args, **kwargs):
+        raise NotImplementedError()
+
+    def clear(self):
+        raise NotImplementedError()
+
+    def items(self):
+        raise NotImplementedError()
+
+    def _convert_args(self, args, kwargs):
+        '''Convert args and kwargs into a single hashable key.'''
+        kwargs = kwargs.items()
+        kwargs.sort()
+        return (args, tuple(kwargs))
+
+class SimpleCache(Cache):
+    '''Simple dict-based cache.'''
+
+    def __init__(self):
+        self._items = {}
+
+    def fetch(self, key):
+        return self._items[key]
+
+    def add(self, item, key):
+        self._items[key] = item
+
+    def fetch_args(self, *args, **kwargs):
+        key = self._convert_args(args, kwargs)
+        return self._items[key]
+
+    def add_args(self, item, *args, **kwargs):
+        key = self._convert_args(args, kwargs)
+        self._items[key] = item
+
+    def clear(self):
+        self._items.clear()
+
+    def items(self):
+        return self._items.items()
+
+class NullCache(Cache):
+    '''Cache that never stores anything.'''
+
+    def fetch(self, key):
+        raise KeyError(key)
+
+    def add(self, item, key):
+        pass
+
+    def fetch_args(self, *args, **kwargs):
+        raise KeyError()
+
+    def add_args(self, item, *args, **kwargs):
+        pass
+
+    def clear(self):
+        pass
+
+    def items(self):
+        return ()
+
+class DebugCache(SimpleCache):
+    '''Cache that never produces anything, but verifies all added items
+    to ensure they are immutable and match previously added items with
+    the same key.'''
+
+    def fetch(self, key):
+        raise KeyError(key)
+
+    def add(self, item, key):
+        self._checked_add(item, key)
+
+    def fetch_args(self, *args, **kwargs):
+        raise KeyError()
+
+    def add_args(self, item, *args, **kwargs):
+        key = self._convert_args(args, kwargs)
+        self._checked_add(item, key)
+
+    def _checked_add(self, item, key):
+        cached = self._items.setdefault(key, item)
+        assert cached == item
+
+        # Verify the immutability of item. Hashability roughly
+        # corresponds to immutability.
+        hash(item)
+
+def _cache_factory():
+    if _usecache == 'no':
+        return NullCache()
+    elif _usecache == 'debug':
+        return DebugCache()
+    else:
+        return SimpleCache()
+
+class CacheRegistry(object):
+    '''Maintains a registry of all caches that have been created.'''
+
+    def __init__(self):
+        self._registry = {} # { <key object>: (cache_obj, 'comment') }
+
+    def new_cache(self, key, comment=None, factory=_cache_factory):
+        '''Create and return a new cache object for the given key (which
+        uniquely identifies a cache) and optional comment.'''
+        cache = factory()
+        self._registry[key] = (cache, comment)
+        return cache
+
+    def get_cache(self, key):
+        '''Return an existing cache for the given key. Raises KeyError if
+        the cache doesn't already exist. In general you should keep a
+        reference to the cache rather than calling this frequently.'''
+        (cache, comment) = self._registry[key]
+        return cache
+
+    def get_comment(self, key):
+        '''Return the comment for the cache identified by key, or None
+        if the cache has no comment. Raises KeyError if the cache doesn't
+        exist.'''
+        (cache, comment) = self._registry[key]
+        return comment
+
+    def clear(self):
+        '''Clear all items from all caches.'''
+        for (cache, comment) in self._registry.values():
+            cache.clear()
+
+    def print_cache(self, file=None):
+        '''Print all caches to file, which defaults to sys.stdout. Intended
+        for debugging only.'''
+        if file is None:
+            import sys
+            file = sys.stdout
+
+        for (ckey, (cache, comment)) in self._registry.items():
+            if comment:
+                header = '%s (%r)' % (comment, ckey)
+            else:
+                header = repr(ckey)
+
+            print >> file, '=' * len(header)
+            print >> file, header
+            print >> file, '=' * len(header)
+
+            width = 0
+            text = []
+            for (k, v) in cache.items():
+                kstr = repr(k)
+                vstr = repr(v)
+                width = max(width, len(kstr))
+                text.append((kstr, vstr))
+
+            lines = ['%-*s : %s' % (width, k, v) for (k, v) in text]
+            print >> file, '\n'.join(lines)
+
+registry = CacheRegistry()
+
+class CacheDecorator(object):
+    def cache_factory(self):
+        '''Return a new object derived from Cache. This exists to be
+        overridden in decorators that use a non-default cache type.'''
+        return _cache_factory()
+
+    def make_cache(self, func):
+        import inspect
+
+        if inspect.ismethod(func):
+            code = func.im_func.func_code
+        else:
+            code = func.func_code
+
+        comment = 'cache for function %s at %s:%d' % (func.__name__,
+            code.co_filename, code.co_firstlineno)
+
+        cache = registry.new_cache(func, comment, self.cache_factory)
+        func._cache_it_cache = cache
+        return cache
+
+    def annotate_wrapper(self, wrapper, func):
+        wrapper.__doc__ = func.__doc__
+        wrapper.__name__ = func.__name__
+
+    def __call__(self, func):
+        cache = self.make_cache(func)
+
+        # Two possible wrappers: one that takes any (hashable) args and one
+        # that takes a single arg and can therefore skip the steps required
+        # for the multi-arg case.
+        def wrapper_args(*args, **kwargs):
+            try:
+                return cache.fetch_args(*args, **kwargs)
+            except KeyError:
+                pass
+
+            val = func(*args, **kwargs)
+            cache.add_args(val, *args, **kwargs)
+            return val
+
+        def wrapper_fast(arg):
+            try:
+                return cache.fetch(arg)
+            except KeyError:
+                pass
+
+            val = func(arg)
+            cache.add(val, arg)
+            return val
+
+        import inspect
+
+        (args, varargs, keywords, defaults) = inspect.getargspec(func)
+        if len(args) == 1 and varargs is None and keywords is None:
+            # Simple single-argument function
+            wrapper = wrapper_fast
+        else:
+            wrapper = wrapper_args
+
+        self.annotate_wrapper(wrapper, func)
+
+        return wrapper
+
+class CacheDebugDecorator(CacheDecorator):
+    def cache_factory(self):
+        return DebugCache()
+
+class CacheArgDecorator(CacheDecorator):
+    def __init__(self, argnum):
+        self.argnum = argnum
+
+    def __call__(self, func):
+        cache = self.make_cache(func)
+        argnum = self.argnum
+
+        def wrapper(*args, **kwargs):
+            arg = args[argnum]
+            try:
+                return cache.fetch(arg)
+            except KeyError:
+                pass
+
+            val = func(*args, **kwargs)
+            cache.add(val, arg)
+            return val
+
+        self.annotate_wrapper(wrapper, func)
+
+        return wrapper
+
+class CacheNullDecorator(CacheDecorator):
+    def __call__(self, func):
+        return func
+
+# These are specific decorators. Typically they should not be used directly,
+# but in a pinch they can be. Normally the 'cacheit*' decorators should be used,
+# which are set based on the cache options.
+#
+# Decorators used without args:
+cache_decorator = CacheDecorator()
+cache_null_decorator = CacheNullDecorator()
+cache_debug_decorator = CacheDebugDecorator()
+# Decorators used with args:
+cache_arg_decorator = CacheArgDecorator
+
 # TODO: refactor CACHE & friends into class?
 
 # global cache registry:
@@ -313,17 +589,15 @@ class Memoizer_nocache(Memoizer):
 
 
 # SYMPY_USE_CACHE=yes/no/debug
-def __usecache():
-    import os
-    return os.getenv('SYMPY_USE_CACHE', 'yes').lower()
-usecache = __usecache()
+import os
+_usecache = os.getenv('SYMPY_USE_CACHE', 'yes').lower()
 
-if usecache=='no':
+if _usecache == 'no':
     Memoizer            = Memoizer_nocache
-    cacheit             = __cacheit_nocache
-elif usecache=='yes':
-    cacheit = __cacheit
-elif usecache=='debug':
-    cacheit = __cacheit_debug   # a lot slower
+    cacheit             = cache_null_decorator
+    cacheit_arg         = cache_null_decorator
+elif _usecache in ('yes', 'debug'):
+    cacheit     = cache_decorator
+    cacheit_arg = cache_arg_decorator
 else:
-    raise RuntimeError('unknown argument in SYMPY_USE_CACHE: %s' % usecache)
+    raise RuntimeError('unknown argument in SYMPY_USE_CACHE: %s' % _usecache)
