@@ -1,25 +1,15 @@
 """ Caching facility for SymPy """
 
-class Cache(object):
-    '''Base class for cache classes.'''
-
-    def fetch(self, key):
-        raise NotImplementedError()
-
-    def add(self, item, key):
-        raise NotImplementedError()
+class Cache(dict):
+    '''Simple dict-based cache.'''
 
     def fetch_args(self, *args, **kwargs):
-        raise NotImplementedError()
+        key = self._convert_args(args, kwargs)
+        return self[key]
 
-    def add_args(self, item, *args, **kwargs):
-        raise NotImplementedError()
-
-    def clear(self):
-        raise NotImplementedError()
-
-    def items(self):
-        raise NotImplementedError()
+    def add_args(self, value, *args, **kwargs):
+        key = self._convert_args(args, kwargs)
+        self[key] = value
 
     def _convert_args(self, args, kwargs):
         '''Convert args and kwargs into a single hashable key.'''
@@ -27,78 +17,70 @@ class Cache(object):
         kwargs.sort()
         return (args, tuple(kwargs))
 
-class SimpleCache(Cache):
-    '''Simple dict-based cache.'''
-
-    def __init__(self):
-        self._items = {}
-
-    def fetch(self, key):
-        return self._items[key]
-
-    def add(self, item, key):
-        self._items[key] = item
-
-    def fetch_args(self, *args, **kwargs):
-        key = self._convert_args(args, kwargs)
-        return self._items[key]
-
-    def add_args(self, item, *args, **kwargs):
-        key = self._convert_args(args, kwargs)
-        self._items[key] = item
-
-    def clear(self):
-        self._items.clear()
-
-    def items(self):
-        return self._items.items()
-
 class NullCache(Cache):
     '''Cache that never stores anything.'''
 
-    def fetch(self, key):
-        raise KeyError(key)
+    def __setitem__(self, key, value):
+        pass
 
-    def add(self, item, key):
+    def setdefault(self, key, default=None):
+        return default
+
+    def update(self, *args, **kwargs):
         pass
 
     def fetch_args(self, *args, **kwargs):
         raise KeyError()
 
-    def add_args(self, item, *args, **kwargs):
+    def add_args(self, value, *args, **kwargs):
         pass
 
-    def clear(self):
-        pass
-
-    def items(self):
-        return ()
-
-class DebugCache(SimpleCache):
+class DebugCache(Cache):
     '''Cache that never produces anything, but verifies all added items
     to ensure they are immutable and match previously added items with
     the same key.'''
 
-    def fetch(self, key):
-        raise KeyError(key)
+    def __init__(self):
+        Cache.__init__(self)
+        # Items are stored in a separate dict so that nothing ever comes
+        # out of the cache.
+        self._cache = {}
 
-    def add(self, item, key):
-        self._checked_add(item, key)
+    def __setitem__(self, key, value):
+        self._checked_add(key, value)
+
+    def setdefault(self, key, default=None):
+        self._checked_add(key, default)
+        return default
+
+    def update(self, *args, **kwargs):
+        if not args:
+            it = kwargs.iteritems()
+        elif len(args) == 1 and not kwargs:
+            try:
+                it = args[0].iteritems()
+            except AttributeError:
+                it = iter(args[0])
+        else:
+            raise TypeError('bad args to update')
+
+        for (key, value) in it:
+            self._checked_add(key, value)
 
     def fetch_args(self, *args, **kwargs):
         raise KeyError()
 
-    def add_args(self, item, *args, **kwargs):
+    def add_args(self, value, *args, **kwargs):
         key = self._convert_args(args, kwargs)
-        self._checked_add(item, key)
+        self._checked_add(key, value)
 
-    def _checked_add(self, item, key):
-        cached = self._items.setdefault(key, item)
-        assert cached == item
+    def _checked_add(self, key, value):
+        cached = self._cache.setdefault(key, value)
+        assert cached == value, 'cached value != new value'
 
-        # Verify the immutability of item. Hashability roughly
+        # Verify the immutability of value. Hashability roughly
         # corresponds to immutability.
-        hash(item)
+        hash(value)
 
 def _cache_factory():
     if _usecache == 'no':
@@ -106,7 +88,7 @@ def _cache_factory():
     elif _usecache == 'debug':
         return DebugCache()
     else:
-        return SimpleCache()
+        return Cache()
 
 class CacheRegistry(object):
     '''Maintains a registry of all caches that have been created.'''
@@ -213,12 +195,12 @@ class CacheDecorator(object):
 
         def wrapper_fast(arg):
             try:
-                return cache.fetch(arg)
+                return cache[arg]
             except KeyError:
                 pass
 
             val = func(arg)
-            cache.add(val, arg)
+            cache[arg] = val
             return val
 
         import inspect
@@ -249,12 +231,12 @@ class CacheArgDecorator(CacheDecorator):
         def wrapper(*args, **kwargs):
             arg = args[argnum]
             try:
-                return cache.fetch(arg)
+                return cache[arg]
             except KeyError:
                 pass
 
             val = func(*args, **kwargs)
-            cache.add(val, arg)
+            cache[arg] = val
             return val
 
         self.annotate_wrapper(wrapper, func)
