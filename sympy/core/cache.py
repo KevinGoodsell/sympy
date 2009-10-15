@@ -1,5 +1,12 @@
 """ Caching facility for SymPy """
 
+# TODO:
+# * Replace CacheDecorator with a more straight-forward version, no
+#   introspection. Create a new decorator with crazy introspection
+#   optimizations.
+# * Add full documentation and tests
+# * Remove old caching code
+
 class Cache(dict):
     '''Simple dict-based cache.'''
 
@@ -13,9 +20,13 @@ class Cache(dict):
 
     def _convert_args(self, args, kwargs):
         '''Convert args and kwargs into a single hashable key.'''
-        kwargs = kwargs.items()
-        kwargs.sort()
-        return (args, tuple(kwargs))
+        if kwargs:
+            kwargs = kwargs.items()
+            kwargs.sort()
+            kwtuple = tuple(kwargs)
+        else:
+            kwtuple = ()
+        return (args, kwtuple)
 
 class NullCache(Cache):
     '''Cache that never stores anything.'''
