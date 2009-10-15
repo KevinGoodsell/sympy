@@ -191,10 +191,7 @@ class CacheDecorator(object):
     def __call__(self, func):
         cache = self.make_cache(func)
 
-        # Two possible wrappers: one that takes any (hashable) args and one
-        # that takes a single arg and can therefore skip the steps required
-        # for the multi-arg case.
-        def wrapper_args(*args, **kwargs):
+        def wrapper(*args, **kwargs):
             try:
                 return cache.fetch_args(*args, **kwargs)
             except KeyError:
@@ -204,25 +201,6 @@ class CacheDecorator(object):
             cache.add_args(val, *args, **kwargs)
             return val
 
-        def wrapper_fast(arg):
-            try:
-                return cache[arg]
-            except KeyError:
-                pass
-
-            val = func(arg)
-            cache[arg] = val
-            return val
-
-        import inspect
-
-        (args, varargs, keywords, defaults) = inspect.getargspec(func)
-        if len(args) == 1 and varargs is None and keywords is None:
-            # Simple single-argument function
-            wrapper = wrapper_fast
-        else:
-            wrapper = wrapper_args
-
         self.annotate_wrapper(wrapper, func)
 
         return wrapper
@@ -231,29 +209,6 @@ class CacheDebugDecorator(CacheDecorator):
     def cache_factory(self):
         return DebugCache()
 
-class CacheArgDecorator(CacheDecorator):
-    def __init__(self, argnum):
-        self.argnum = argnum
-
-    def __call__(self, func):
-        cache = self.make_cache(func)
-        argnum = self.argnum
-
-        def wrapper(*args, **kwargs):
-            arg = args[argnum]
-            try:
-                return cache[arg]
-            except KeyError:
-                pass
-
-            val = func(*args, **kwargs)
-            cache[arg] = val
-            return val
-
-        self.annotate_wrapper(wrapper, func)
-
-        return wrapper
-
 class CacheNullDecorator(CacheDecorator):
     def __call__(self, func):
         return func
@@ -261,13 +216,9 @@ class CacheNullDecorator(CacheDecorator):
 # These are specific decorators. Typically they should not be used directly,
 # but in a pinch they can be. Normally the 'cacheit*' decorators should be used,
 # which are set based on the cache options.
-#
-# Decorators used without args:
 cache_decorator = CacheDecorator()
 cache_null_decorator = CacheNullDecorator()
 cache_debug_decorator = CacheDebugDecorator()
-# Decorators used with args:
-cache_arg_decorator = CacheArgDecorator
 
 # TODO: refactor CACHE & friends into class?
 
@@ -588,9 +539,7 @@ _usecache = os.getenv('SYMPY_USE_CACHE', 'yes').lower()
 if _usecache == 'no':
     Memoizer            = Memoizer_nocache
     cacheit             = cache_null_decorator
-    cacheit_arg         = cache_null_decorator
 elif _usecache in ('yes', 'debug'):
     cacheit     = cache_decorator
-    cacheit_arg = cache_arg_decorator
 else:
     raise RuntimeError('unknown argument in SYMPY_USE_CACHE: %s' % _usecache)
