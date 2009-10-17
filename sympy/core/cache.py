@@ -1,9 +1,6 @@
 """ Caching facility for SymPy """
 
 # TODO:
-# * Replace CacheDecorator with a more straight-forward version, no
-#   introspection. Create a new decorator with crazy introspection
-#   optimizations.
 # * Add full documentation and tests
 # * Remove old caching code
 
@@ -64,18 +61,16 @@ class DebugCache(Cache):
         self._checked_add(key, default)
         return default
 
-    def update(self, *args, **kwargs):
-        if not args:
-            it = kwargs.iteritems()
-        elif len(args) == 1 and not kwargs:
-            try:
-                it = args[0].iteritems()
-            except AttributeError:
-                it = iter(args[0])
+    def update(self, seq=(), **kwargs):
+        if hasattr(seq, 'iteritems'):
+            it = seq.iteritems()
         else:
-            raise TypeError('bad args to update')
+            it = iter(seq)
 
         for (key, value) in it:
+            self._checked_add(key, value)
+
+        for (key, value) in kwargs:
             self._checked_add(key, value)
 
     def fetch_args(self, *args, **kwargs):
@@ -181,7 +176,6 @@ class CacheDecorator(object):
             code.co_filename, code.co_firstlineno)
 
         cache = registry.new_cache(func, comment, self.cache_factory)
-        func._cache_it_cache = cache
         return cache
 
     def annotate_wrapper(self, wrapper, func):
@@ -202,10 +196,111 @@ class CacheDecorator(object):
             return val
 
         self.annotate_wrapper(wrapper, func)
+        wrapper._cacheit_cache = cache
 
         return wrapper
 
-class CacheDebugDecorator(CacheDecorator):
+class CacheIntroDecorator(CacheDecorator):
+    def __init__(self, *args):
+        arg_names = []
+        for arg in args:
+            arg_names.extend(arg.split())
+
+        self.arg_names = frozenset(arg_names)
+
+    def __call__(self, func):
+        cache = self.make_cache(func)
+
+        (wrapper_name, wrapper_text) = self.build_wrapper(func)
+        exec wrapper_text in locals()
+        wrapper = eval(wrapper_name)
+
+        self.annotate_wrapper(wrapper, func)
+        wrapper._cacheit_cache = cache
+        wrapper._cacheit_wrapper_src = wrapper_text
+
+        return wrapper
+
+    def build_wrapper(self, func):
+        # Check the function arguments against the arguments given in the
+        # constructor.
+        import inspect
+        (args, varargs, varkw, defaults) = inspect.getargspec(func)
+        all_args = set(args)
+        if varargs: all_args.add(varargs)
+        if varkw: all_args.add(varkw)
+
+        bad_args = self.arg_names - all_args
+        if bad_args:
+            raise ValueError('Unknown argument(s): %s' % ', '.join(bad_args))
+
+        # This is the template for the wrapper function.
+        func_template = (
+            'def %(name)s%(argspec)s:\n'
+            '%(kwargs_lines)s'
+            '    try:\n'
+            '        return cache[%(key)s]\n'
+            '    except KeyError:\n'
+            '        pass\n'
+            '\n'
+            '    val = func%(call)s\n'
+            '    cache[%(key)s] = val\n'
+            '    return val\n'
+        )
+
+        # This is the dict that will contain all the template keys.
+        # The rest of this function is almost entirely filling this in.
+        filler = {}
+
+        filler['name'] = func.__name__ + '_wrapper'
+        filler['argspec'] = inspect.formatargspec(args, varargs, varkw, defaults)
+        filler['call'] = inspect.formatargspec(args, varargs, varkw)
+
+        # Figure out which arguments to use in the key, either the names
+        # provided in the constructor, or all args if none were given.
+        if self.arg_names:
+            use_args = self.arg_names
+        else:
+            use_args = set(args)
+            if varargs: use_args.add(varargs)
+            if varkw: use_args.add(varkw)
+
+        # Get the kwargs_lines filler, which is either empty, or creates
+        # kwargs_tuple from kwargs.
+        filler['kwargs_lines'] = ''
+        if varkw and varkw in use_args:
+            filler['kwargs_lines'] = (
+                '    %(varkw)s_list = %(varkw)s.items()\n'
+                '    %(varkw)s_list.sort()\n'
+                '    %(varkw)s_tuple = tuple(%(varkw)s_list)\n\n'
+                % dict(varkw=varkw)
+            )
+
+        # Figure out the 'key' item, which is a little tricky.
+        key_items = []
+
+        args_items = [arg for arg in args if arg in use_args]
+        if len(args_items) == 1:
+            key_items.append('(%s,)' % args_items[0])
+        else:
+            key_items.append('(%s)' % ', '.join(args_items))
+
+        if varargs in use_args:
+            key_items.append(varargs)
+
+        if varkw in use_args:
+            key_items.append('%s_tuple' % varkw)
+
+        # Special case: key_items contains only ['(one_item)']. In this case
+        # the key doesn't need to be a tuple.
+        if len(key_items) == 1 and len(args_items) == 1:
+            filler['key'] = args_items[0]
+        else:
+            filler['key'] = ' + '.join(key_items)
+
+        return (filler['name'], func_template % filler)
+
+class CacheDebugDecorator(CacheIntroDecorator):
     def cache_factory(self):
         return DebugCache()
 
@@ -216,9 +311,14 @@ class CacheNullDecorator(CacheDecorator):
 # These are specific decorators. Typically they should not be used directly,
 # but in a pinch they can be. Normally the 'cacheit*' decorators should be used,
 # which are set based on the cache options.
-cache_decorator = CacheDecorator()
+#
+# Decorators used without arguments:
+cache_decorator = CacheIntroDecorator()
 cache_null_decorator = CacheNullDecorator()
 cache_debug_decorator = CacheDebugDecorator()
+# Decorators used with arguments:
+cache_args_decorator = CacheIntroDecorator
+cache_null_args_decorator = CacheNullDecorator
 
 # TODO: refactor CACHE & friends into class?
 
@@ -539,7 +639,9 @@ _usecache = os.getenv('SYMPY_USE_CACHE', 'yes').lower()
 if _usecache == 'no':
     Memoizer            = Memoizer_nocache
     cacheit             = cache_null_decorator
+    cacheit_args        = cache_null_args_decorator
 elif _usecache in ('yes', 'debug'):
-    cacheit     = cache_decorator
+    cacheit      = cache_decorator
+    cacheit_args = cache_args_decorator
 else:
     raise RuntimeError('unknown argument in SYMPY_USE_CACHE: %s' % _usecache)
