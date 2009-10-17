@@ -3,6 +3,7 @@
 # TODO:
 # * Add full documentation and tests
 # * Remove old caching code
+# * Add cache statistics
 
 class Cache(dict):
     '''Simple dict-based cache.'''
@@ -320,44 +321,15 @@ cache_debug_decorator = CacheDebugDecorator()
 cache_args_decorator = CacheIntroDecorator
 cache_null_args_decorator = CacheNullDecorator
 
-# TODO: refactor CACHE & friends into class?
-
-# global cache registry:
-CACHE = []  # [] of
-            #    (item, {} or tuple of {})
-
-def print_cache():
+def print_cache(file=None):
     """print cache content"""
 
-    for item, cache in CACHE:
-        item = str(item)
-        head = '='*len(item)
-
-        print head
-        print item
-        print head
-
-        if not isinstance(cache, tuple):
-            cache = (cache,)
-            shown = False
-        else:
-            shown = True
-
-        for i, kv in enumerate(cache):
-            if shown:
-                print '\n*** %i ***\n' % i
-
-            for k, v in kv.iteritems():
-                print '  %s :\t%s' % (k, v)
+    return registry.print_cache(file)
 
 def clear_cache():
     """clear cache content"""
-    for item, cache in CACHE:
-        if not isinstance(cache, tuple):
-            cache = (cache,)
 
-        for kv in cache:
-            kv.clear()
+    return registry.clear()
 
 ########################################
 
