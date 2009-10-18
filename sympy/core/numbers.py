@@ -1,6 +1,6 @@
 from basic import Atom, SingletonMeta, S, Basic
 from decorators import _sympifyit
-from cache import Memoizer, MemoizerArg
+from cache import cacheit, cacheit_args
 import sympy.mpmath as mpmath
 import sympy.mpmath.libmpf as mlib
 import sympy.mpmath.libmpc as mlibc
@@ -94,7 +94,7 @@ def igcdex(a, b):
 
     return (x*x_sign, y*y_sign, a)
 
-@Memoizer((int, long), return_value_converter = lambda d: d.copy())
+@cacheit
 def factor_trial_division(n):
     """
     Factor any integer into a product of primes, 0, 1, and -1.
@@ -498,8 +498,7 @@ class Rational(Number):
 
     is_Rational = True
 
-    @Memoizer(type, (int, long, str, 'Integer'),
-              MemoizerArg((int, long, 'Integer', type(None)), name="q"))
+    @cacheit_args('p q')
     def __new__(cls, p, q = None):
         if q is None:
             if isinstance(p, str):
@@ -1621,7 +1620,6 @@ Basic.singleton['EulerGamma'] = EulerGamma
 Basic.singleton['Catalan'] = Catalan
 
 from basic import Basic, Atom, S, C, SingletonMeta
-from cache import Memoizer, MemoizerArg
 from sympify import _sympify, SympifyError
 from function import FunctionClass
 from power import Pow, integer_nthroot
